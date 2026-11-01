@@ -1,0 +1,179 @@
+alias: Regulation solaire
+description: >-
+  regulation de la charge/decharge en fonction de la polarite Linky et de la
+  valeur actuelle de charge/decharge batterie
+triggers:
+  - trigger: state
+    entity_id:
+      - sensor.linky_filtre
+conditions:
+  - condition: state
+    entity_id: input_boolean.izypower_actif
+    state:
+      - 'on'
+actions:
+  - variables:
+      valeur_shelly: '{{ states(''sensor.shelly_les_essarts_power'') | int(0) }}'
+      valeur_shelly_regule: '{{ (((valeur_shelly / 10) | int(0)) * 10) }}'
+      puissance: >-
+        {{ states('sensor.izypower_titan_titan_ac_input_and_output') | int(0) |
+        abs }}
+      is_neutre: '{{ -30 <= valeur_shelly <= 50 }}'
+  - choose:
+      - conditions:
+          - condition: state
+            entity_id: input_select.action_batterie
+            state:
+              - Charge
+        sequence:
+          - sequence:
+              - action: number.set_value
+                metadata: {}
+                target:
+                  entity_id: number.izypower_titan_max_charge_power
+                data:
+                  value: '2400'
+              - action: number.set_value
+                metadata: {}
+                target:
+                  entity_id: number.izypower_titan_charge_discharge_power
+                data:
+                  value: |-
+                    {% if is_neutre %}
+                      {{ puissance }}
+                    {% else %}
+                      {% set resultat = ((-1 * valeur_shelly_regule) + puissance) %}
+                      {{ (((resultat / 10) | int(0)) * 10) if resultat > 0 else 0 }}
+                    {% endif %}
+              - action: button.press
+                metadata: {}
+                target:
+                  entity_id: button.izypower_titan_start_charge
+                data: {}
+            enabled: true
+            alias: Charge régulée
+      - conditions:
+          - condition: state
+            entity_id: input_select.action_batterie
+            state:
+              - Decharge
+        sequence:
+          - sequence:
+              - action: number.set_value
+                metadata: {}
+                target:
+                  entity_id: number.izypower_titan_max_discharge_power
+                data:
+                  value: '500'
+              - action: number.set_value
+                metadata: {}
+                target:
+                  entity_id: number.izypower_titan_charge_discharge_power
+                data:
+                  value: |-
+                    {% if is_neutre %}
+                      {{ puissance }}
+                    {% else %}
+                      {% set resultat = ( valeur_shelly_regule + puissance) %}
+                      {{ (((resultat / 10) | int(0)) * 10) if resultat > 0 else 0 }}
+                    {% endif %}
+              - action: button.press
+                metadata: {}
+                target:
+                  entity_id: button.izypower_titan_start_discharge
+                data: {}
+            enabled: true
+            alias: Décharge régulée
+      - conditions:
+          - condition: state
+            entity_id: input_select.action_batterie
+            state:
+              - Auto
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: power.is_value
+                    target:
+                      entity_id: sensor.panneaux_solaire_total_ac_output_power_active
+                    options:
+                      behavior: any
+                      for: '00:00:00'
+                      threshold:
+                        type: above
+                        value:
+                          active_choice: number
+                          unit_of_measurement: W
+                          number: 20
+                sequence:
+                  - sequence:
+                      - action: number.set_value
+                        metadata: {}
+                        target:
+                          entity_id: number.izypower_titan_192_168_100_20_max_charge_power
+                        data:
+                          value: '2400'
+                      - action: number.set_value
+                        metadata: {}
+                        target:
+                          entity_id: number.izypower_titan_192_168_100_20_charge_discharge_power
+                        data:
+                          value: |-
+                            {% if is_neutre %}
+                              {{ (((puissance / 10) | int(0)) * 10) }}
+                            {% else %}
+                              {% set resultat = ((-1 * valeur_shelly) + puissance) %}
+                              {{ (((resultat / 10) | int(0)) * 10) if resultat > 0 else 0 }}
+                            {% endif %}
+                      - action: button.press
+                        metadata: {}
+                        target:
+                          entity_id: button.izypower_titan_192_168_100_20_start_charge
+                        data: {}
+                    enabled: true
+                    alias: Charge régulée
+                alias: Si Soleil
+              - conditions:
+                  - condition: and
+                    conditions:
+                      - condition: numeric_state
+                        entity_id: sensor.izypower_titan_titan_battery
+                        above: 75
+                      - condition: time
+                        after: '23:30:00'
+                    alias: Bat +75% et nuit
+                sequence:
+                  - sequence:
+                      - action: number.set_value
+                        metadata: {}
+                        target:
+                          entity_id: number.izypower_titan_max_discharge_power
+                        data:
+                          value: '150'
+                      - action: number.set_value
+                        metadata: {}
+                        target:
+                          entity_id: number.izypower_titan_charge_discharge_power
+                        data:
+                          value: |-
+                            {% if is_neutre %}
+                              {{ (((puissance / 10) | int(0)) * 10) }}
+                            {% else %}
+                              {% set resultat = ( valeur_shelly + puissance) %}
+                              {{ (((resultat / 10) | int(0)) * 10) if resultat > 0 else 0 }}
+                            {% endif %}
+                      - action: button.press
+                        metadata: {}
+                        target:
+                          entity_id: button.izypower_titan_start_discharge
+                        data: {}
+                    enabled: true
+                    alias: Decharge à 150w max
+    enabled: true
+    default:
+      - action: button.press
+        metadata: {}
+        target:
+          entity_id: button.izypower_titan_192_168_100_20_standby
+        data: {}
+mode: single
+max_exceeded: silent
