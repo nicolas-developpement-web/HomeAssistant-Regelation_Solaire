@@ -4,66 +4,82 @@ description: >-
   Régulation progressive Izypower Titan selon la puissance réseau du Shelly.
   Puissance positive = consommation réseau.
   Puissance négative = surplus solaire.
+
 triggers:
+  # Déclenchement sur la mesure du Shelly
   - trigger: state
-    entity_id: sensor.shelly_les_essarts_power
+    entity_id: sensor.shellyproem50_08f9e0e6a638_energy_meter_0_power
     id: mesure
 
+  # Régulation périodique
   - trigger: time_pattern
     seconds: "/10"
     id: regulation
 
+  # Changement de mode ou autorisation
   - trigger: state
     entity_id:
       - input_select.action_batterie
-      - input_boolean.izypower_actif
+      - input_boolean.batterie_autorise
     id: mode
 
+  # Changement du SOC ou de la production solaire
   - trigger: state
     entity_id:
-      - sensor.izypower_titan_titan_battery
-      - sensor.panneaux_solaire_total_ac_output_power_active
+      - sensor.izypower_titan_192_168_1_75_titan_battery
+      - sensor.192_168_1_65_power
     id: conditions
 
+  # Passage en mode nuit
   - trigger: time
     at: "23:00:00"
     id: nuit
 
 conditions:
   - condition: state
-    entity_id: input_boolean.izypower_actif
+    entity_id: input_boolean.batterie_autorise
     state: "on"
 
+  # Sécurité : ne pas réguler avec une mesure réseau indisponible
   - condition: template
     value_template: >-
-      {{ is_number(states('sensor.shelly_les_essarts_power'))
-         and is_number(states('number.izypower_titan_charge_discharge_power')) }}
+      {{ is_number(states(
+        'sensor.shellyproem50_08f9e0e6a638_energy_meter_0_power'))
+        and is_number(states(
+        'number.izypower_titan_charge_discharge_power')) }}
 
 actions:
+  # ==================================================
+  # CENTRALISATION DES ENTITÉS ET PARAMÈTRES
+  # ==================================================
   - variables:
-      # Mesure réseau : positif = importation, négatif = injection
-      reseau: "{{ states('sensor.shelly_les_essarts_power') | float }}"
+      entite_reseau: sensor.shellyproem50_08f9e0e6a638_energy_meter_0_power
+      entite_soc: sensor.izypower_titan_192_168_1_75_titan_battery
+      entite_commande: number.izypower_titan_charge_discharge_power
+      entite_max_charge: number.izypower_titan_max_charge_power
+      entite_max_decharge: number.izypower_titan_max_discharge_power
+      entite_solaire: sensor.192_168_1_65_power
+      entite_mode: input_select.action_batterie
+      entite_autorisation: input_boolean.batterie_autorise
 
-      # Dernière consigne connue
-      commande: >-
-        {{ states('number.izypower_titan_charge_discharge_power') | float }}
-      
-      # Niveau de batterie
-      soc: "{{ states('sensor.izypower_titan_titan_battery') | float(0) }}"
+      bouton_charge: button.izypower_titan_start_charge
+      bouton_decharge: button.izypower_titan_start_discharge
+      bouton_veille: button.izypower_titan_standby
 
-      # Puissance des panneaux solaire
-      solaire: >-
-        {{ states('sensor.panneaux_solaire_total_ac_output_power_active')
-           | float(0) }}
-      
-      # Selecteur de mode
-      mode_batterie: "{{ states('input_select.action_batterie') }}"
+      # Mesures
+      reseau: "{{ states(entite_reseau) | float(0) }}"
+      commande: "{{ states(entite_commande) | float(0) }}"
+      soc: "{{ states(entite_soc) | float(0) }}"
+      solaire: "{{ states(entite_solaire) | float(0) }}"
+      mode_batterie: "{{ states(entite_mode) }}"
 
-      # Réglages
+      # Paramètres de régulation
       cible: 30
       zone_morte: 40
       rampe: 50
       pas: 10
+
+      # Limites de puissance à vérifier selon la configuration du Titan
       max_charge: 2400
       max_decharge: 500
       max_nuit: 200
@@ -73,144 +89,146 @@ actions:
         {% set e = (reseau | float) - cible %}
         {{ 0 if (e | abs) <= zone_morte else e }}
 
-      # Correction limitée à RAMPE W par cycle
+      # Variation limitée à 50 W par cycle de 10 secondes
       variation: >-
         {% set e = erreur | float %}
         {% set v = [[-rampe, e] | max, rampe] | min %}
         {{ ((v / pas) | round(0) * pas) | int }}
 
-      # Charge : injection -> augmenter la consigne
+      # Charge : injection = augmenter la charge
       consigne_charge: >-
         {% set v = (commande | float) - (variation | float) %}
         {{ [[0, v] | max, max_charge] | min | int }}
 
-      # Décharge : consommation -> augmenter la consigne
+      # Décharge : consommation = augmenter la décharge
       consigne_decharge: >-
         {% set v = (commande | float) + (variation | float) %}
         {{ [[0, v] | max, max_decharge] | min | int }}
 
-      # Décharge nocturne plafonnée à MAX_NUIT W
+      # Décharge nocturne limitée à 200 W
       consigne_nuit: >-
         {% set v = (commande | float) + (variation | float) %}
         {{ [[0, v] | max, max_nuit] | min | int }}
 
+  # ==================================================
+  # SÉLECTION DU MODE
+  # ==================================================
   - choose:
-      # ===================== CHARGE =====================
+
+      # ---------------- MODE CHARGE ----------------
       - conditions:
-          - condition: state
-            entity_id: input_select.action_batterie
-            state: "Charge"
+          - condition: template
+            value_template: "{{ mode_batterie == 'Charge' }}"
         sequence:
           - if:
               - condition: template
                 value_template: >-
-                  {{ states('number.izypower_titan_max_charge_power')
-                     | float(-1) != max_charge }}
+                  {{ states(entite_max_charge) | float(-1)
+                     != max_charge }}
             then:
               - action: number.set_value
                 target:
-                  entity_id: number.izypower_titan_max_charge_power
+                  entity_id: "{{ entite_max_charge }}"
                 data:
                   value: "{{ max_charge }}"
 
           - if:
               - condition: template
                 value_template: >-
-                  {{ (consigne_charge | int - commande | float) | abs >= pas }}
+                  {{ ((consigne_charge | float)
+                      - (commande | float)) | abs >= pas }}
             then:
               - action: number.set_value
                 target:
-                  entity_id: number.izypower_titan_charge_discharge_power
+                  entity_id: "{{ entite_commande }}"
                 data:
                   value: "{{ consigne_charge }}"
 
               - action: button.press
                 target:
-                  entity_id: button.izypower_titan_start_charge
+                  entity_id: "{{ bouton_charge }}"
 
-      # ===================== DÉCHARGE =====================
+      # ---------------- MODE DÉCHARGE ----------------
       - conditions:
-          - condition: state
-            entity_id: input_select.action_batterie
-            state: "Decharge"
+          - condition: template
+            value_template: "{{ mode_batterie == 'Decharge' }}"
         sequence:
           - if:
               - condition: template
                 value_template: >-
-                  {{ states('number.izypower_titan_max_discharge_power')
-                     | float(-1) != max_decharge }}
+                  {{ states(entite_max_decharge) | float(-1)
+                     != max_decharge }}
             then:
               - action: number.set_value
                 target:
-                  entity_id: number.izypower_titan_max_discharge_power
+                  entity_id: "{{ entite_max_decharge }}"
                 data:
                   value: "{{ max_decharge }}"
 
           - if:
               - condition: template
                 value_template: >-
-                  {{ (consigne_decharge | int - commande | float) | abs >= pas }}
+                  {{ ((consigne_decharge | float)
+                      - (commande | float)) | abs >= pas }}
             then:
               - action: number.set_value
                 target:
-                  entity_id: number.izypower_titan_charge_discharge_power
+                  entity_id: "{{ entite_commande }}"
                 data:
-                  value: "{{ consigne_decharge -30 }}"
+                  value: "{{ consigne_decharge }}"
 
               - action: button.press
                 target:
-                  entity_id: button.izypower_titan_start_discharge
+                  entity_id: "{{ bouton_decharge }}"
 
-      # ===================== AUTO =====================
+      # ---------------- MODE AUTO ----------------
       - conditions:
-          - condition: state
-            entity_id: input_select.action_batterie
-            state: "Auto"
+          - condition: template
+            value_template: "{{ mode_batterie == 'Auto' }}"
         sequence:
           - choose:
 
-              # Après 23 h : décharge uniquement si SOC > 70 %
+              # Nuit : après 23 h, SOC supérieur à 70 %
               - conditions:
                   - condition: time
                     after: "23:00:00"
-                  - condition: numeric_state
-                    entity_id: sensor.izypower_titan_titan_battery
-                    above: 70
+                  - condition: template
+                    value_template: "{{ soc | float > 70 }}"
                 sequence:
                   - if:
                       - condition: template
                         value_template: >-
-                          {{ states('number.izypower_titan_max_discharge_power')
-                             | float(-1) != max_nuit }}
+                          {{ states(entite_max_decharge) | float(-1)
+                             != max_nuit }}
                     then:
                       - action: number.set_value
                         target:
-                          entity_id: number.izypower_titan_max_discharge_power
+                          entity_id: "{{ entite_max_decharge }}"
                         data:
                           value: "{{ max_nuit }}"
 
                   - if:
                       - condition: template
                         value_template: >-
-                          {{ (consigne_nuit | int - commande | float) | abs >= pas }}
+                          {{ ((consigne_nuit | float)
+                              - (commande | float)) | abs >= pas }}
                     then:
                       - action: number.set_value
                         target:
-                          entity_id: number.izypower_titan_charge_discharge_power
+                          entity_id: "{{ entite_commande }}"
                         data:
-                          value: "{{ consigne_nuit -30 }}"
+                          value: "{{ consigne_nuit }}"
 
                       - action: button.press
                         target:
-                          entity_id: button.izypower_titan_start_discharge
+                          entity_id: "{{ bouton_decharge }}"
 
-              # Après 23 h : SOC insuffisant, arrêt de la décharge
+              # Nuit : SOC inférieur à 20 %, passage en veille
               - conditions:
                   - condition: time
                     after: "23:00:00"
-                  - condition: numeric_state
-                    entity_id: sensor.izypower_titan_titan_battery
-                    below: 20
+                  - condition: template
+                    value_template: "{{ soc | float < 20 }}"
                 sequence:
                   - if:
                       - condition: template
@@ -218,15 +236,15 @@ actions:
                     then:
                       - action: number.set_value
                         target:
-                          entity_id: number.izypower_titan_charge_discharge_power
+                          entity_id: "{{ entite_commande }}"
                         data:
                           value: 0
 
                       - action: button.press
                         target:
-                          entity_id: button.izypower_titan_standby
+                          entity_id: "{{ bouton_veille }}"
 
-              # Avant 23 h : régulation de charge
+              # Journée : charge régulée avant 23 h
               - conditions:
                   - condition: time
                     before: "23:00:00"
@@ -234,29 +252,30 @@ actions:
                   - if:
                       - condition: template
                         value_template: >-
-                          {{ states('number.izypower_titan_max_charge_power')
-                             | float(-1) != max_charge }}
+                          {{ states(entite_max_charge) | float(-1)
+                             != max_charge }}
                     then:
                       - action: number.set_value
                         target:
-                          entity_id: number.izypower_titan_max_charge_power
+                          entity_id: "{{ entite_max_charge }}"
                         data:
                           value: "{{ max_charge }}"
 
                   - if:
                       - condition: template
                         value_template: >-
-                          {{ (consigne_charge | int - commande | float) | abs >= pas }}
+                          {{ ((consigne_charge | float)
+                              - (commande | float)) | abs >= pas }}
                     then:
                       - action: number.set_value
                         target:
-                          entity_id: number.izypower_titan_charge_discharge_power
+                          entity_id: "{{ entite_commande }}"
                         data:
                           value: "{{ consigne_charge }}"
 
                       - action: button.press
                         target:
-                          entity_id: button.izypower_titan_start_charge
+                          entity_id: "{{ bouton_charge }}"
 
 mode: single
 max_exceeded: silent
