@@ -46,7 +46,7 @@ conditions:
       {{ is_number(states(
         'sensor.shellyproem50_08f9e0e6a638_energy_meter_0_power'))
         and is_number(states(
-        'number.izypower_titan_charge_discharge_power')) }}
+        'number.izypower_titan_192_168_1_75_charge_discharge_power')) }}
 
 actions:
   # ==================================================
@@ -55,16 +55,16 @@ actions:
   - variables:
       entite_reseau: sensor.shellyproem50_08f9e0e6a638_energy_meter_0_power
       entite_soc: sensor.izypower_titan_192_168_1_75_titan_battery
-      entite_commande: number.izypower_titan_charge_discharge_power
-      entite_max_charge: number.izypower_titan_max_charge_power
-      entite_max_decharge: number.izypower_titan_max_discharge_power
+      entite_commande: number.izypower_titan_192_168_1_75_charge_discharge_power
+      entite_max_charge: number.izypower_titan_192_168_1_75_max_charge_power
+      entite_max_decharge: number.izypower_titan_192_168_1_75_max_discharge_power
       entite_solaire: sensor.192_168_1_65_power
       entite_mode: input_select.action_batterie
       entite_autorisation: input_boolean.batterie_autorise
 
-      bouton_charge: button.izypower_titan_start_charge
-      bouton_decharge: button.izypower_titan_start_discharge
-      bouton_veille: button.izypower_titan_standby
+      bouton_charge: button.izypower_titan_192_168_1_75_start_charge
+      bouton_decharge: button.izypower_titan_192_168_1_75_start_discharge
+      bouton_veille: button.izypower_titan_192_168_1_75_standby
 
       # Mesures
       reseau: "{{ states(entite_reseau) | float(0) }}"
@@ -175,7 +175,7 @@ actions:
                 target:
                   entity_id: "{{ entite_commande }}"
                 data:
-                  value: "{{ consigne_decharge }}"
+                  value: "{{ consigne_decharge - 30 }}"
 
               - action: button.press
                 target:
@@ -217,7 +217,7 @@ actions:
                         target:
                           entity_id: "{{ entite_commande }}"
                         data:
-                          value: "{{ consigne_nuit }}"
+                          value: "{{ consigne_nuit - 30 }}"
 
                       - action: button.press
                         target:
