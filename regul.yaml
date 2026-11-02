@@ -47,21 +47,24 @@ actions:
       # Dernière consigne connue
       commande: >-
         {{ states('number.izypower_titan_charge_discharge_power') | float }}
-
+      
+      # Niveau de batterie
       soc: "{{ states('sensor.izypower_titan_titan_battery') | float(0) }}"
 
+      # Puissance des panneaux solaire
       solaire: >-
         {{ states('sensor.panneaux_solaire_total_ac_output_power_active')
            | float(0) }}
-
+      
+      # Selecteur de mode
       mode_batterie: "{{ states('input_select.action_batterie') }}"
 
       # Réglages
       cible: 30
       zone_morte: 40
-      rampe: 100
+      rampe: 50
       pas: 10
-      max_charge: 800
+      max_charge: 2400
       max_decharge: 500
       max_nuit: 200
 
@@ -70,7 +73,7 @@ actions:
         {% set e = (reseau | float) - cible %}
         {{ 0 if (e | abs) <= zone_morte else e }}
 
-      # Correction limitée à 100 W par cycle
+      # Correction limitée à RAMPE W par cycle
       variation: >-
         {% set e = erreur | float %}
         {% set v = [[-rampe, e] | max, rampe] | min %}
@@ -86,13 +89,12 @@ actions:
         {% set v = (commande | float) + (variation | float) %}
         {{ [[0, v] | max, max_decharge] | min | int }}
 
-      # Décharge nocturne plafonnée à 200 W
+      # Décharge nocturne plafonnée à MAX_NUIT W
       consigne_nuit: >-
         {% set v = (commande | float) + (variation | float) %}
         {{ [[0, v] | max, max_nuit] | min | int }}
 
   - choose:
-
       # ===================== CHARGE =====================
       - conditions:
           - condition: state
@@ -153,7 +155,7 @@ actions:
                 target:
                   entity_id: number.izypower_titan_charge_discharge_power
                 data:
-                  value: "{{ consigne_decharge }}"
+                  value: "{{ consigne_decharge -30 }}"
 
               - action: button.press
                 target:
@@ -167,13 +169,13 @@ actions:
         sequence:
           - choose:
 
-              # Après 23 h : décharge uniquement si SOC > 75 %
+              # Après 23 h : décharge uniquement si SOC > 70 %
               - conditions:
                   - condition: time
                     after: "23:00:00"
                   - condition: numeric_state
                     entity_id: sensor.izypower_titan_titan_battery
-                    above: 75
+                    above: 70
                 sequence:
                   - if:
                       - condition: template
@@ -196,7 +198,7 @@ actions:
                         target:
                           entity_id: number.izypower_titan_charge_discharge_power
                         data:
-                          value: "{{ consigne_nuit }}"
+                          value: "{{ consigne_nuit -30 }}"
 
                       - action: button.press
                         target:
@@ -208,7 +210,7 @@ actions:
                     after: "23:00:00"
                   - condition: numeric_state
                     entity_id: sensor.izypower_titan_titan_battery
-                    below: 75.1
+                    below: 20
                 sequence:
                   - if:
                       - condition: template
