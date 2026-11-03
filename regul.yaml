@@ -8,37 +8,46 @@ triggers:
   - trigger: state
     entity_id: sensor.shelly_les_essarts_power
     id: mesure
+
   # Régulation périodique
   - trigger: time_pattern
     seconds: "/10"
     id: regulation
+
   # Changement de mode ou autorisation
   - trigger: state
     entity_id:
       - input_select.action_batterie
       - input_boolean.batterie_autorise
     id: mode
+
   # Changement du SOC ou de la production solaire
   - trigger: state
     entity_id:
       - sensor.izypower_titan_titan_battery
       - sensor.panneaux_solaire_total_ac_output_power_active
     id: conditions
+
   # Passage en mode nuit
   - trigger: time
     at: "23:00:00"
     id: nuit
+
+  # Passage en mode journée
+  - trigger: time
+    at: "08:00:00"
+    id: jour
+
 conditions:
   - condition: state
     entity_id: input_boolean.batterie_autorise
     state: "on"
+
   # Sécurité : ne pas réguler avec une mesure réseau indisponible
   - condition: template
     value_template: >-
-      {{ is_number(states(
-        'sensor.shelly_les_essarts_power'))
-        and is_number(states(
-        'number.izypower_titan_charge_discharge_power')) }}
+      {{ is_number(states('sensor.shelly_les_essarts_power'))
+         and is_number(states('number.izypower_titan_charge_discharge_power')) }}
 
 actions:
   # ==================================================
@@ -46,7 +55,7 @@ actions:
   # ==================================================
   - variables:
       entite_reseau: sensor.shelly_les_essarts_power
-      
+
       entite_soc: sensor.izypower_titan_titan_battery
       entite_commande: number.izypower_titan_charge_discharge_power
       entite_max_charge: number.izypower_titan_max_charge_power
@@ -54,44 +63,51 @@ actions:
       bouton_charge: button.izypower_titan_start_charge
       bouton_decharge: button.izypower_titan_start_discharge
       bouton_veille: button.izypower_titan_standby
-      
+
       entite_solaire: sensor.panneaux_solaire_total_ac_output_power_active
-      
+
       entite_mode: input_select.action_batterie
       entite_autorisation: input_boolean.batterie_autorise
-      
+
       # Mesures
       reseau: "{{ states(entite_reseau) | float(0) }}"
       commande: "{{ states(entite_commande) | float(0) }}"
       soc: "{{ states(entite_soc) | float(0) }}"
       solaire: "{{ states(entite_solaire) | float(0) }}"
       mode_batterie: "{{ states(entite_mode) }}"
+
       # Paramètres de régulation
       cible: 30
       zone_morte: 40
       rampe: 50
       pas: 10
-      # Limites de puissance à vérifier selon la configuration du Titan
+
+      # Limites de puissance
       max_charge: 2400
       max_decharge: 500
       max_nuit: 200
+
       # Erreur de régulation avec zone morte
       erreur: >-
         {% set e = (reseau | float) - cible %}
         {{ 0 if (e | abs) <= zone_morte else e }}
+
       # Variation limitée à 50 W par cycle de 10 secondes
       variation: >-
         {% set e = erreur | float %}
         {% set v = [[-rampe, e] | max, rampe] | min %}
         {{ ((v / pas) | round(0) * pas) | int }}
+
       # Charge : injection = augmenter la charge
       consigne_charge: >-
         {% set v = (commande | float) - (variation | float) %}
         {{ [[0, v] | max, max_charge] | min | int }}
+
       # Décharge : consommation = augmenter la décharge
       consigne_decharge: >-
         {% set v = (commande | float) + (variation | float) %}
         {{ [[0, v] | max, max_decharge] | min | int }}
+
       # Décharge nocturne limitée à 200 W
       consigne_nuit: >-
         {% set v = (commande | float) + (variation | float) %}
@@ -109,28 +125,29 @@ actions:
           - if:
               - condition: template
                 value_template: >-
-                  {{ states(entite_max_charge) | float(-1)
-                     != max_charge }}
+                  {{ states(entite_max_charge) | float(-1) != max_charge }}
             then:
               - action: number.set_value
                 target:
                   entity_id: "{{ entite_max_charge }}"
                 data:
                   value: "{{ max_charge }}"
+
           - if:
               - condition: template
                 value_template: >-
-                  {{ ((consigne_charge | float)
-                      - (commande | float)) | abs >= pas }}
+                  {{ ((consigne_charge | float) - (commande | float)) | abs >= pas }}
             then:
               - action: number.set_value
                 target:
                   entity_id: "{{ entite_commande }}"
                 data:
                   value: "{{ consigne_charge }}"
+
               - action: button.press
                 target:
                   entity_id: "{{ bouton_charge }}"
+
       # ---------------- MODE DÉCHARGE ----------------
       - conditions:
           - condition: template
@@ -139,19 +156,18 @@ actions:
           - if:
               - condition: template
                 value_template: >-
-                  {{ states(entite_max_decharge) | float(-1)
-                     != max_decharge }}
+                  {{ states(entite_max_decharge) | float(-1) != max_decharge }}
             then:
               - action: number.set_value
                 target:
                   entity_id: "{{ entite_max_decharge }}"
                 data:
                   value: "{{ max_decharge }}"
+
           - if:
               - condition: template
                 value_template: >-
-                  {{ ((consigne_decharge | float)
-                      - (commande | float)) | abs >= pas }}
+                  {{ ((consigne_decharge | float) - (commande | float)) | abs >= pas }}
             then:
               - action: number.set_value
                 target:
@@ -162,48 +178,58 @@ actions:
               - action: button.press
                 target:
                   entity_id: "{{ bouton_decharge }}"
+
       # ---------------- MODE AUTO ----------------
       - conditions:
           - condition: template
             value_template: "{{ mode_batterie == 'Auto' }}"
         sequence:
           - choose:
-              # Nuit : après 23 h, SOC supérieur à 70 %
+              # -------------------------------------------------
+              # NUIT : 23 h -> 08 h, SOC > 70 %
+              # Décharge régulée limitée à 200 W
+              # -------------------------------------------------
               - conditions:
                   - condition: time
                     after: "23:00:00"
+                    before: "08:00:00"
                   - condition: template
                     value_template: "{{ soc | float > 70 }}"
                 sequence:
                   - if:
                       - condition: template
                         value_template: >-
-                          {{ states(entite_max_decharge) | float(-1)
-                             != max_nuit }}
+                          {{ states(entite_max_decharge) | float(-1) != max_nuit }}
                     then:
                       - action: number.set_value
                         target:
                           entity_id: "{{ entite_max_decharge }}"
                         data:
                           value: "{{ max_nuit }}"
+
                   - if:
                       - condition: template
                         value_template: >-
-                          {{ ((consigne_nuit | float)
-                              - (commande | float)) | abs >= pas }}
+                          {{ ((consigne_nuit | float) - (commande | float)) | abs >= pas }}
                     then:
                       - action: number.set_value
                         target:
                           entity_id: "{{ entite_commande }}"
                         data:
                           value: "{{ consigne_nuit - 30 }}"
+
                       - action: button.press
                         target:
                           entity_id: "{{ bouton_decharge }}"
-              # Nuit : SOC inférieur à 20 %, passage en veille
+
+              # -------------------------------------------------
+              # NUIT : 23 h -> 08 h, SOC < 20 %
+              # Passage en veille
+              # -------------------------------------------------
               - conditions:
                   - condition: time
                     after: "23:00:00"
+                    before: "08:00:00"
                   - condition: template
                     value_template: "{{ soc | float < 20 }}"
                 sequence:
@@ -216,38 +242,83 @@ actions:
                           entity_id: "{{ entite_commande }}"
                         data:
                           value: 0
+
                       - action: button.press
                         target:
                           entity_id: "{{ bouton_veille }}"
-              # Journée : charge régulée avant 23 h
+
+              # -------------------------------------------------
+              # NUIT : 23 h -> 08 h, SOC entre 20 % et 70 %
+              # Décharge régulée limitée à 200 W
+              # -------------------------------------------------
               - conditions:
                   - condition: time
+                    after: "23:00:00"
+                    before: "08:00:00"
+                  - condition: template
+                    value_template: >-
+                      {{ soc | float >= 20 and soc | float <= 70 }}
+                sequence:
+                  - if:
+                      - condition: template
+                        value_template: >-
+                          {{ states(entite_max_decharge) | float(-1) != max_nuit }}
+                    then:
+                      - action: number.set_value
+                        target:
+                          entity_id: "{{ entite_max_decharge }}"
+                        data:
+                          value: "{{ max_nuit }}"
+
+                  - if:
+                      - condition: template
+                        value_template: >-
+                          {{ ((consigne_nuit | float) - (commande | float)) | abs >= pas }}
+                    then:
+                      - action: number.set_value
+                        target:
+                          entity_id: "{{ entite_commande }}"
+                        data:
+                          value: "{{ consigne_nuit - 30 }}"
+
+                      - action: button.press
+                        target:
+                          entity_id: "{{ bouton_decharge }}"
+
+              # -------------------------------------------------
+              # JOURNÉE : 08 h -> 23 h
+              # Charge régulée
+              # -------------------------------------------------
+              - conditions:
+                  - condition: time
+                    after: "08:00:00"
                     before: "23:00:00"
                 sequence:
                   - if:
                       - condition: template
                         value_template: >-
-                          {{ states(entite_max_charge) | float(-1)
-                             != max_charge }}
+                          {{ states(entite_max_charge) | float(-1) != max_charge }}
                     then:
                       - action: number.set_value
                         target:
                           entity_id: "{{ entite_max_charge }}"
                         data:
                           value: "{{ max_charge }}"
+
                   - if:
                       - condition: template
                         value_template: >-
-                          {{ ((consigne_charge | float)
-                              - (commande | float)) | abs >= pas }}
+                          {{ ((consigne_charge | float) - (commande | float)) | abs >= pas }}
                     then:
                       - action: number.set_value
                         target:
                           entity_id: "{{ entite_commande }}"
                         data:
                           value: "{{ consigne_charge }}"
+
                       - action: button.press
                         target:
                           entity_id: "{{ bouton_charge }}"
+
 mode: single
 max_exceeded: silent
